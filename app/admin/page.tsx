@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import TopBar from '@/components/TopBar';
 
+type WalletType = 'bybit_uid' | 'btc_address';
+
 type ProfileRow = {
   id: string;
   email: string | null;
@@ -14,10 +16,22 @@ type ProfileRow = {
   pu_converted: number;
   auto_convert: boolean;
   carryover_usd: number;
-  wallet_default: 'bybit_uid' | 'btc_address';
+  wallet_default: WalletType;
   bybit_uid: string | null;
   btc_address: string | null;
   start_date: string | null;
+};
+
+type EditForm = {
+  first_name: string;
+  last_name: string;
+  pu_total: number;
+  pu_converted: number;
+  auto_convert: boolean;
+  carryover_usd: number;
+  wallet_default: WalletType;
+  bybit_uid: string;
+  btc_address: string;
 };
 
 export default function AdminPage() {
@@ -26,6 +40,12 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState<ProfileRow[]>([]);
   const [q, setQ] = useState('');
+
+  // editor riga
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState<EditForm | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
   // Controllo login + ruolo admin
   useEffect(() => {
@@ -49,11 +69,9 @@ export default function AdminPage() {
     if (!error && data) setRows(data as unknown as ProfileRow[]);
     setLoading(false);
   };
+  useEffect(() => { if (ready) void load(); }, [ready]);
 
-  useEffect(() => {
-    if (ready) void load();
-  }, [ready]);
-
+  // Filtro ricerca
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
     if (!term) return rows;
@@ -67,6 +85,67 @@ export default function AdminPage() {
       );
     });
   }, [q, rows]);
+
+  // Entra in modalità modifica
+  const startEdit = (r: ProfileRow) => {
+    setErr(null);
+    setEditingId(r.id);
+    setForm({
+      first_name: r.first_name ?? '',
+      last_name: r.last_name ?? '',
+      pu_total: r.pu_total,
+      pu_converted: r.pu_converted,
+      auto_convert: r.auto_convert,
+      carryover_usd: r.carryover_usd,
+      wallet_default: r.wallet_default,
+      bybit_uid: r.bybit_uid ?? '',
+      btc_address: r.btc_address ?? '',
+    });
+  };
+  const cancelEdit = () => { setEditingId(null); setForm(null); setErr(null); };
+
+  // Salva modifica
+  const saveEdit = async () => {
+    if (!editingId || !form) return;
+    setSaving(true);
+    setErr(null);
+
+    // Validazioni minime
+    if (form.wallet_default === 'bybit_uid' && !form.bybit_uid.trim()) {
+      setErr('Inserisci un Bybit UID oppure cambia wallet default.');
+      setSaving(false);
+      return;
+    }
+    if (form.wallet_default === 'btc_address' && !form.btc_address.trim()) {
+      setErr('Inserisci un indirizzo BTC oppure cambia wallet default.');
+      setSaving(false);
+      return;
+    }
+
+    const payload = {
+      first_name: form.first_name || null,
+      last_name: form.last_name || null,
+      pu_total: Number(form.pu_total) || 0,
+      pu_converted: Number(form.pu_converted) || 0,
+      auto_convert: !!form.auto_convert,
+      carryover_usd: Number(form.carryover_usd) || 0,
+      wallet_default: form.wallet_default,
+      bybit_uid: form.bybit_uid.trim() || null,
+      btc_address: form.btc_address.trim() || null,
+    };
+
+    const { error } = await supabase.from('profiles').update(payload).eq('id', editingId);
+    setSaving(false);
+    if (error) { setErr(error.message); return; }
+
+    await load();
+    cancelEdit();
+  };
+
+  // Vai alla pagina cliente (vista admin)
+  const openClient = (id: string) => {
+    router.push(`/admin/client/${id}`);
+  };
 
   if (!ready) return null;
 
@@ -93,6 +172,9 @@ export default function AdminPage() {
           </button>
         </div>
 
+        {/* Messaggi */}
+        {err && <div className="mb-3 text-red-400 text-sm">{err}</div>}
+
         {/* Tabella */}
         <div className="overflow-x-auto border border-neutral-800 rounded-lg">
           <table className="min-w-full text-sm">
@@ -106,6 +188,7 @@ export default function AdminPage() {
                 <th className="text-right px-3 py-2">Carryover (USD)</th>
                 <th className="text-left px-3 py-2">Wallet default</th>
                 <th className="text-left px-3 py-2">Destinazione</th>
+                <th className="text-left px-3 py-2">Azioni</th>
               </tr>
             </thead>
             <tbody>
@@ -115,22 +198,160 @@ export default function AdminPage() {
                   r.wallet_default === 'bybit_uid'
                     ? (r.bybit_uid || '—')
                     : (r.btc_address || '—');
+
+                const isEdit = editingId === r.id;
+
                 return (
-                  <tr key={r.id} className="border-t border-neutral-800 hover:bg-neutral-900/40">
-                    <td className="px-3 py-2">{full}</td>
+                  <tr key={r.id} className="border-t border-neutral-800 align-top hover:bg-neutral-900/40">
+                    {/* Cliente */}
+                    <td className="px-3 py-2">
+                      {isEdit ? (
+                        <div className="flex gap-2">
+                          <input
+                            value={form?.first_name ?? ''}
+                            onChange={(e) => setForm(p => p ? ({ ...p, first_name: e.target.value }) : p)}
+                            placeholder="Nome"
+                            className="w-28 px-2 py-1 rounded bg-neutral-900 border border-neutral-800 outline-none"
+                          />
+                          <input
+                            value={form?.last_name ?? ''}
+                            onChange={(e) => setForm(p => p ? ({ ...p, last_name: e.target.value }) : p)}
+                            placeholder="Cognome"
+                            className="w-32 px-2 py-1 rounded bg-neutral-900 border border-neutral-800 outline-none"
+                          />
+                        </div>
+                      ) : full}
+                    </td>
+
+                    {/* Email */}
                     <td className="px-3 py-2">{r.email ?? '—'}</td>
-                    <td className="px-3 py-2 text-right">{r.pu_total}</td>
-                    <td className="px-3 py-2 text-right">{r.pu_converted}</td>
-                    <td className="px-3 py-2">{r.auto_convert ? 'ON' : 'OFF'}</td>
-                    <td className="px-3 py-2 text-right">{r.carryover_usd.toFixed(2)}</td>
-                    <td className="px-3 py-2">{r.wallet_default}</td>
-                    <td className="px-3 py-2">{dest}</td>
+
+                    {/* PU */}
+                    <td className="px-3 py-2 text-right">
+                      {isEdit ? (
+                        <input
+                          type="number"
+                          value={form?.pu_total ?? 0}
+                          onChange={(e) => setForm(p => p ? ({ ...p, pu_total: Number(e.target.value) }) : p)}
+                          className="w-24 text-right px-2 py-1 rounded bg-neutral-900 border border-neutral-800 outline-none"
+                        />
+                      ) : r.pu_total}
+                    </td>
+
+                    {/* PU convertite */}
+                    <td className="px-3 py-2 text-right">
+                      {isEdit ? (
+                        <input
+                          type="number"
+                          value={form?.pu_converted ?? 0}
+                          onChange={(e) => setForm(p => p ? ({ ...p, pu_converted: Number(e.target.value) }) : p)}
+                          className="w-24 text-right px-2 py-1 rounded bg-neutral-900 border border-neutral-800 outline-none"
+                        />
+                      ) : r.pu_converted}
+                    </td>
+
+                    {/* Auto-conv */}
+                    <td className="px-3 py-2">
+                      {isEdit ? (
+                        <select
+                          value={form?.auto_convert ? 'ON' : 'OFF'}
+                          onChange={(e) => setForm(p => p ? ({ ...p, auto_convert: e.target.value === 'ON' }) : p)}
+                          className="px-2 py-1 rounded bg-neutral-900 border border-neutral-800 outline-none"
+                        >
+                          <option>ON</option>
+                          <option>OFF</option>
+                        </select>
+                      ) : (r.auto_convert ? 'ON' : 'OFF')}
+                    </td>
+
+                    {/* Carryover */}
+                    <td className="px-3 py-2 text-right">
+                      {isEdit ? (
+                        <input
+                          type="number" step="0.01"
+                          value={form?.carryover_usd ?? 0}
+                          onChange={(e) => setForm(p => p ? ({ ...p, carryover_usd: Number(e.target.value) }) : p)}
+                          className="w-28 text-right px-2 py-1 rounded bg-neutral-900 border border-neutral-800 outline-none"
+                        />
+                      ) : r.carryover_usd.toFixed(2)}
+                    </td>
+
+                    {/* Wallet default */}
+                    <td className="px-3 py-2">
+                      {isEdit ? (
+                        <select
+                          value={form?.wallet_default ?? 'bybit_uid'}
+                          onChange={(e) => setForm(p => p ? ({ ...p, wallet_default: e.target.value as WalletType }) : p)}
+                          className="px-2 py-1 rounded bg-neutral-900 border border-neutral-800 outline-none"
+                        >
+                          <option value="bybit_uid">bybit_uid</option>
+                          <option value="btc_address">btc_address</option>
+                        </select>
+                      ) : r.wallet_default}
+                    </td>
+
+                    {/* Destinazione */}
+                    <td className="px-3 py-2">
+                      {isEdit ? (
+                        form?.wallet_default === 'bybit_uid' ? (
+                          <input
+                            value={form?.bybit_uid ?? ''}
+                            onChange={(e) => setForm(p => p ? ({ ...p, bybit_uid: e.target.value }) : p)}
+                            placeholder="Bybit UID"
+                            className="w-40 px-2 py-1 rounded bg-neutral-900 border border-neutral-800 outline-none"
+                          />
+                        ) : (
+                          <input
+                            value={form?.btc_address ?? ''}
+                            onChange={(e) => setForm(p => p ? ({ ...p, btc_address: e.target.value }) : p)}
+                            placeholder="BTC address"
+                            className="w-64 px-2 py-1 rounded bg-neutral-900 border border-neutral-800 outline-none"
+                          />
+                        )
+                      ) : dest}
+                    </td>
+
+                    {/* Azioni */}
+                    <td className="px-3 py-2">
+                      {isEdit ? (
+                        <div className="flex gap-2">
+                          <button
+                            onClick={saveEdit}
+                            disabled={saving}
+                            className="px-2 py-1 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60"
+                          >
+                            {saving ? 'Salvo…' : 'Salva'}
+                          </button>
+                          <button
+                            onClick={cancelEdit}
+                            className="px-2 py-1 rounded bg-neutral-800 hover:bg-neutral-700"
+                          >
+                            Annulla
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => openClient(r.id)}
+                            className="px-2 py-1 rounded bg-neutral-800 hover:bg-neutral-700"
+                          >
+                            Apri dashboard
+                          </button>
+                          <button
+                            onClick={() => startEdit(r)}
+                            className="px-2 py-1 rounded bg-neutral-800 hover:bg-neutral-700"
+                          >
+                            Modifica
+                          </button>
+                        </div>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
               {filtered.length === 0 && (
                 <tr>
-                  <td className="px-3 py-6 text-center text-neutral-400" colSpan={8}>
+                  <td className="px-3 py-6 text-center text-neutral-400" colSpan={9}>
                     Nessun cliente trovato.
                   </td>
                 </tr>
@@ -140,8 +361,8 @@ export default function AdminPage() {
         </div>
 
         <p className="text-xs text-neutral-500 mt-3">
-          Mostrati {filtered.length} clienti (max 100). A breve aggiungiamo: “Apri dashboard cliente”,
-          modifica PU, storico, split mensile, ecc.
+          Ricerca, modifica campi e apertura dashboard cliente. Al prossimo step: split mensile, storico transazioni,
+          e grafici.
         </p>
       </div>
     </div>
